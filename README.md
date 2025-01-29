@@ -1,6 +1,6 @@
 # RomanBrickAnalysis
 
-Lo script è stato progettato specificamente per supportare l'analisi quantitativa delle murature di età romana in opera laterizia, offrendo un approccio strutturato e automatizzato per l’analisi dimensionale e statistica dei laterizi utilizzati nelle murature.
+Lo script è stato progettato specificamente per supportare l'analisi quantitativa delle murature di età romana in opera laterizia, offrendo un approccio strutturato e automatizzato per l’analisi dimensionale e statistica dei laterizi utilizzati nelle murature secondo il modello proposto da Maura Medri e dalla sua equipe (https://pdfs.semanticscholar.org/373e/c1a3bf317c3216612f4c63d9802da5d67ce0.pdf).
 
 Lo script utilizza gli strumenti di processing di QGIS per:
 - Eseguire join spaziali.
@@ -13,6 +13,7 @@ Requisiti
 - Versione di Python: lo script richiede Python 3.8 o successivo.
 - Versione di QGIS: richiede QGIS 3.16 o successivo.
 - QGIS: lo script deve essere eseguito all'interno degli strumenti di processing di QGIS.
+- Plugin DataPlotly (https://plugins.qgis.org/plugins/DataPlotly/#plugin-about)
 - Dati in un sistema di riferimento cartografico o locale; NON UTILIZZARE SISTEMI DI RIFERIMENTO GEOGRAFICI.
 
 Dati:
@@ -33,7 +34,7 @@ Sintesi dei processi:
 1. Join spaziale:
    - Unisce attributi del layer "rilievo" al layer "campioni" sulla base dell'intersezione geometrica. Questo consente di associare informazioni dettagliate sui laterizi e sul campione di riferimento.
 2. Calcolo poligono minimo orientato:
-   - Genera il poligono minimo orientato calcolando la dimensione (lunghezza e spessore) per ciascuna geometria contenuta nel layer_input
+   - Genera il poligono minimo orientato calcolando le dimensioni (lunghezza e spessore) per ciascuna geometria contenuta nel layer_input
 3. Unione attributi:
    - Combina attributi dal calcolo poligono minimo orientato con il layer originale per arricchire i dati con misure geometriche.
 4. Estrazione e filtraggio:
@@ -50,7 +51,7 @@ Sintesi dei processi:
 Esempio:
 1.	Connettere a QGIS il geopackage “Analisi_campioni” all’interno della cartella “Data”.
 2.	Aprire il progetto già predisposto “analisi_campioni”.
-3.	Eseguire l'algoritmo dal pannello "Processing" di QGIS.
+3.	Eseguire lo script dal pannello "Processing" di QGIS.
 4.	Esaminare i layers di output.
 5.	Aprire il gestore dei layout e caricare il modello “scheda_campione”.
 6.	Attivare la modalità Atlante e utilizzare come layer di copertura “Analisi_campioni”.
