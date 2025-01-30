@@ -20,6 +20,7 @@ Requisiti
 - Dati in un sistema di riferimento cartografico o locale; NON UTILIZZARE SISTEMI DI RIFERIMENTO GEOGRAFICI.
 
 Dati:
+
 Per il corretto funzionamento dello script è necessario utilizzare i layers già prepisposti nel geopackage all'interno della cartella "Data".
  - Layer "campioni": layer poligonale per la registrazione delle aree campionate (solitamente 1 mq).
  - Layer "rilievo": layer poligonale per la registrazione delle geometrie riferite ai laterizi contenuti in ciascun campione di muratura.
