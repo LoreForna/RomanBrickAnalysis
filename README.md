@@ -2,7 +2,7 @@
 
 Lo script, da integrare tra gli strumenti di processing di QGIS, è stato progettato specificamente per supportare l'analisi quantitativa delle murature di età romana in opera laterizia, offrendo un approccio strutturato e automatizzato per l’analisi dimensionale e statistica dei laterizi utilizzati nelle murature secondo il modello proposto da Maura Medri e dalla sua equipe (https://pdfs.semanticscholar.org/373e/c1a3bf317c3216612f4c63d9802da5d67ce0.pdf).
 
-Rngrazio Valerio Pinna (https://github.com/ValPinnaSardinia) per il suo supporto durante lo sviluppo.
+Si ringrazia Valerio Pinna (https://github.com/ValPinnaSardinia) per il suo supporto durante lo sviluppo.
 
 
 Lo script utilizza gli strumenti di processing di QGIS per:
@@ -20,8 +20,9 @@ Requisiti
 - Dati in un sistema di riferimento cartografico o locale; NON UTILIZZARE SISTEMI DI RIFERIMENTO GEOGRAFICI.
 
 Dati:
- - Layer "campioni": rappresenta le superfici dei campioni di muratura, utili per il calcolo delle statistiche complessive.
- - Layer "rilievo": contiene le geometrie poligonali riferite ai laterizi contenuti in ciascun campione di muratura.
+Per il corretto funzionamento dello script è necessario utilizzare i layers già prepisposti nel geopackage all'interno della cartella "Data".
+ - Layer "campioni": layer poligonale per la registrazione delle aree campionate (solitamente 1 mq).
+ - Layer "rilievo": layer poligonale per la registrazione delle geometrie riferite ai laterizi contenuti in ciascun campione di muratura.
 
 Input:
 - layer_input: layer "rilievo".
@@ -37,7 +38,7 @@ Sintesi dei processi:
 1. Join spaziale:
    - Unisce attributi del layer "rilievo" al layer "campioni" sulla base dell'intersezione geometrica. Questo consente di associare informazioni dettagliate sui laterizi e sul campione di riferimento.
 2. Calcolo poligono minimo orientato:
-   - Genera il poligono minimo orientato calcolando le dimensioni (lunghezza e spessore) per ciascuna geometria contenuta nel layer_input
+   - Genera il poligono minimo orientato calcolando le dimensioni (lunghezza e spessore) per ciascuna geometria contenuta nel layer_rilievo
 3. Unione attributi:
    - Combina attributi dal calcolo poligono minimo orientato con il layer originale per arricchire i dati con misure geometriche.
 4. Estrazione e filtraggio:
