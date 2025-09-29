@@ -1,0 +1,1027 @@
+"""
+SCRIPT ANALISI MENSIOCRONOLOGICA PER OPERA LATERIZIA
+"""
+
+from qgis.core import (
+    QgsProcessing,
+    QgsProcessingAlgorithm,
+    QgsProcessingMultiStepFeedback,
+    QgsProcessingParameterFeatureSource,
+    QgsProcessingParameterFeatureSink,
+    QgsProcessingParameterFile,
+    QgsProcessingParameterNumber,
+    QgsProcessingParameterString,
+    QgsProcessingParameterBoolean,
+    QgsProcessingException,
+    QgsProcessingUtils
+)
+import processing
+import os
+
+
+class AnalisiFiltrata(QgsProcessingAlgorithm):
+
+    def initAlgorithm(self, config=None):
+        # Input layers
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            'layer_rilievo',
+            'Layer rilievo (poligoni componenti muratura)',
+            types=[QgsProcessing.TypeVectorPolygon],
+            defaultValue='rilievo'
+        ))
+        
+        self.addParameter(QgsProcessingParameterFeatureSource(
+            'layer_campioni',
+            'Layer campioni (poligoni aree campioni)',
+            types=[QgsProcessing.TypeVectorPolygon],
+            defaultValue='campioni'
+        ))
+        
+        # Parametri filtro
+        self.addParameter(QgsProcessingParameterString(
+            'tipo_materiale',
+            'Tipo di materiale (separati da virgola, vuoto=tutti)',
+            defaultValue='',
+            optional=True
+        ))
+        
+        self.addParameter(QgsProcessingParameterBoolean(
+            'includi_non_classificati',
+            'Includi elementi non classificati (NULL)',
+            defaultValue=False
+        ))
+        
+        # Parametri range
+        self.addParameter(QgsProcessingParameterNumber(
+            'width_range_step',
+            'Step range larghezza (m)',
+            type=QgsProcessingParameterNumber.Double,
+            defaultValue=0.002,
+            minValue=0.001
+        ))
+        
+        self.addParameter(QgsProcessingParameterNumber(
+            'height_range_step',
+            'Step range altezza (m)',
+            type=QgsProcessingParameterNumber.Double,
+            defaultValue=0.001,
+            minValue=0.001
+        ))
+        
+        # Output layers
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            'output_bbox',
+            'Min oriented bbox',
+            type=QgsProcessing.TypeVectorPolygon
+        ))
+        
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            'output_rilievo',
+            'Analisi rilievo',
+            type=QgsProcessing.TypeVectorPolygon
+        ))
+        
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            'output_campioni_table',
+            'Analisi campioni (tabella)',
+            type=QgsProcessing.TypeVectorAnyGeometry
+        ))
+        
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            'output_campioni',
+            'Analisi campioni (geografico)',
+            type=QgsProcessing.TypeVectorAnyGeometry
+        ))
+        
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            'output_width_range',
+            'Conteggio range larghezza',
+            type=QgsProcessing.TypeVectorAnyGeometry
+        ))
+        
+        self.addParameter(QgsProcessingParameterFeatureSink(
+            'output_height_range',
+            'Conteggio range altezza',
+            type=QgsProcessing.TypeVectorAnyGeometry
+        ))
+        
+        # Stili opzionali
+        self.addParameter(QgsProcessingParameterFile(
+            'stile_bbox',
+            'Stile min_oriented_bbox',
+            behavior=QgsProcessingParameterFile.File,
+            fileFilter='File QML (*.qml)',
+            optional=True
+        ))
+        
+        self.addParameter(QgsProcessingParameterFile(
+            'stile_rilievo',
+            'Stile analisi_rilievo',
+            behavior=QgsProcessingParameterFile.File,
+            fileFilter='File QML (*.qml)',
+            optional=True
+        ))
+        
+        self.addParameter(QgsProcessingParameterFile(
+            'stile_campioni_table',
+            'Stile analisi_campioni_table',
+            behavior=QgsProcessingParameterFile.File,
+            fileFilter='File QML (*.qml)',
+            optional=True
+        ))
+        
+        self.addParameter(QgsProcessingParameterFile(
+            'stile_campioni',
+            'Stile analisi_campioni',
+            behavior=QgsProcessingParameterFile.File,
+            fileFilter='File QML (*.qml)',
+            optional=True
+        ))
+
+    def verifica_features(self, layer_id, context, feedback, step_name):
+        """Conta e mostra le features a ogni step"""
+        layer = QgsProcessingUtils.mapLayerFromString(layer_id, context)
+        if layer and layer.isValid():
+            count = layer.featureCount()
+            feedback.pushInfo(f"  --> {step_name}: {count} features")
+            
+            # Conta per tipo se esiste il campo
+            if 'tipo' in [f.name() for f in layer.fields()]:
+                tipi = {}
+                for feat in layer.getFeatures():
+                    tipo = str(feat['tipo']) if feat['tipo'] else 'NULL'
+                    tipi[tipo] = tipi.get(tipo, 0) + 1
+                for tipo, cnt in sorted(tipi.items()):
+                    feedback.pushInfo(f"      * {tipo}: {cnt}")
+            return count
+        return 0
+
+    def applica_stile(self, layer_id, stile_path, context, feedback, nome_layer):
+        """Applica stile se il file esiste ed e' valido"""
+        if stile_path and os.path.exists(stile_path):
+            try:
+                processing.run('native:setlayerstyle', {
+                    'INPUT': layer_id,
+                    'STYLE': stile_path
+                }, context=context, feedback=feedback, is_child_algorithm=True)
+                feedback.pushInfo(f"[OK] Stile {nome_layer} applicato")
+            except Exception as e:
+                feedback.pushWarning(f"Impossibile applicare stile {nome_layer}: {str(e)}")
+
+    def processAlgorithm(self, parameters, context, model_feedback):
+        feedback = QgsProcessingMultiStepFeedback(20, model_feedback)
+        results = {}
+        
+        try:
+            feedback.pushInfo("\n" + "="*70)
+            feedback.pushInfo("ANALISI MENSIOCRONOLOGICA - VERSIONE OTTIMIZZATA")
+            feedback.pushInfo("="*70)
+            
+            # ============ FASE 1: PARAMETRI E VALIDAZIONE ============
+            layer_rilievo = self.parameterAsSource(parameters, 'layer_rilievo', context)
+            layer_campioni = self.parameterAsSource(parameters, 'layer_campioni', context)
+            tipo_input = self.parameterAsString(parameters, 'tipo_materiale', context).strip()
+            includi_null = self.parameterAsBool(parameters, 'includi_non_classificati', context)
+            width_step = self.parameterAsDouble(parameters, 'width_range_step', context)
+            height_step = self.parameterAsDouble(parameters, 'height_range_step', context)
+            
+            # Validazione parametri
+            if layer_rilievo.featureCount() == 0:
+                raise QgsProcessingException("Il layer rilievo e' vuoto!")
+            if layer_campioni.featureCount() == 0:
+                raise QgsProcessingException("Il layer campioni e' vuoto!")
+            if width_step <= 0:
+                raise QgsProcessingException("Lo step larghezza deve essere maggiore di 0!")
+            if height_step <= 0:
+                raise QgsProcessingException("Lo step altezza deve essere maggiore di 0!")
+            
+            # Stili
+            stili = {
+                'bbox': self.parameterAsFile(parameters, 'stile_bbox', context),
+                'rilievo': self.parameterAsFile(parameters, 'stile_rilievo', context),
+                'campioni_table': self.parameterAsFile(parameters, 'stile_campioni_table', context),
+                'campioni': self.parameterAsFile(parameters, 'stile_campioni', context)
+            }
+            
+            feedback.pushInfo(f"\nLayer rilievo: {layer_rilievo.featureCount()} features")
+            feedback.pushInfo(f"Layer campioni: {layer_campioni.featureCount()} features")
+            
+            # Parse tipi materiale
+            if tipo_input:
+                tipi = [t.strip() for t in tipo_input.split(',') if t.strip()]
+                applica_filtro = True
+                feedback.pushInfo(f"Filtro materiali: {', '.join(tipi)}")
+                if includi_null:
+                    feedback.pushInfo("  (+ elementi non classificati)")
+            else:
+                tipi = []
+                applica_filtro = False
+                feedback.pushInfo("Filtro materiali: NESSUNO (tutti i tipi)")
+            
+            feedback.setCurrentStep(1)
+            
+            # ============ FASE 2: SPATIAL JOIN ============
+            feedback.pushInfo("\n--- SPATIAL JOIN ---")
+            
+            joined = processing.run('native:joinattributesbylocation', {
+                'INPUT': parameters['layer_rilievo'],
+                'JOIN': parameters['layer_campioni'],
+                'JOIN_FIELDS': ['campione', 'ambiente', 'usm', 'sito'],
+                'PREDICATE': [0],
+                'METHOD': 0,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            self.verifica_features(joined['OUTPUT'], context, feedback, "Dopo spatial join")
+            feedback.setCurrentStep(2)
+            
+            # ============ FASE 3: FILTRO MATERIALI ============
+            if applica_filtro:
+                feedback.pushInfo("\n--- APPLICAZIONE FILTRO ---")
+                
+                # Costruisci espressione
+                if len(tipi) == 1:
+                    expr = f'"tipo" = \'{tipi[0]}\''
+                else:
+                    tipi_quoted = "','".join(tipi)
+                    expr = f'"tipo" IN (\'{tipi_quoted}\')'
+                
+                # Aggiungi NULL se richiesto
+                if includi_null:
+                    expr = f'({expr}) OR "tipo" IS NULL OR "tipo" = \'NULL\''
+                
+                feedback.pushInfo(f"Espressione filtro: {expr}")
+                
+                filtrato = processing.run('native:extractbyexpression', {
+                    'EXPRESSION': expr,
+                    'INPUT': joined['OUTPUT'],
+                    'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+                }, context=context, feedback=feedback, is_child_algorithm=True)
+                
+                count_filtrato = self.verifica_features(filtrato['OUTPUT'], context, feedback, "Dopo filtro")
+                
+                if count_filtrato == 0:
+                    raise QgsProcessingException(f"Il filtro ha prodotto 0 risultati! Verifica i valori: {', '.join(tipi)}")
+                
+                layer_base = filtrato['OUTPUT']
+            else:
+                feedback.pushInfo("\n--- NESSUN FILTRO APPLICATO ---")
+                layer_base = joined['OUTPUT']
+            
+            feedback.setCurrentStep(3)
+            
+            # ============ FASE 4: BOUNDING BOX ============
+            feedback.pushInfo("\n--- CALCOLO BOUNDING BOX ---")
+            
+            bbox = processing.run('qgis:minimumboundinggeometry', {
+                'INPUT': layer_base,
+                'FIELD': 'fid',
+                'TYPE': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            self.verifica_features(bbox['OUTPUT'], context, feedback, "Bounding box creati")
+            feedback.setCurrentStep(4)
+            
+            # Join bbox con attributi originali
+            bbox_full = processing.run('native:joinattributestable', {
+                'INPUT': bbox['OUTPUT'],
+                'INPUT_2': layer_base,
+                'FIELD': 'fid',
+                'FIELD_2': 'fid',
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(5)
+            
+            # Riorganizza campi bbox
+            bbox_final = processing.run('native:refactorfields', {
+                'INPUT': bbox_full['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"fid"', 'name': 'fid', 'type': 4, 'length': 0, 'precision': 0},
+                    {'expression': '"sito"', 'name': 'sito', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"usm"', 'name': 'usm', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"num_componente"', 'name': 'num_componente', 'type': 4, 'length': 0, 'precision': 0},
+                    {'expression': '"tipo"', 'name': 'tipo', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"superficie"', 'name': 'superficie', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"area_componente"', 'name': 'area_componente', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"height"', 'name': 'width_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"width"', 'name': 'height_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"angle"', 'name': 'angle_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"perimeter"', 'name': 'perimeter_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"area"', 'name': 'area_bbox', 'type': 6, 'length': 6, 'precision': 4}
+                ],
+                'OUTPUT': parameters['output_bbox']
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            results['output_bbox'] = bbox_final['OUTPUT']
+            context.layerToLoadOnCompletionDetails(results['output_bbox']).name = "min_oriented_bbox"
+            self.verifica_features(results['output_bbox'], context, feedback, "Min oriented bbox FINALE")
+            feedback.setCurrentStep(6)
+            
+            # ============ FASE 5: SEPARAZIONE INTERI/PARZIALI ============
+            feedback.pushInfo("\n--- SEPARAZIONE INTERI/PARZIALI ---")
+            
+            interi = processing.run('native:extractbyattribute', {
+                'INPUT': bbox_final['OUTPUT'],
+                'FIELD': 'superficie',
+                'OPERATOR': 0,
+                'VALUE': 'intera',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            parziali = processing.run('native:extractbyattribute', {
+                'INPUT': bbox_final['OUTPUT'],
+                'FIELD': 'superficie',
+                'OPERATOR': 0,
+                'VALUE': 'parziale',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            count_interi = self.verifica_features(interi['OUTPUT'], context, feedback, "Componenti interi")
+            count_parziali = self.verifica_features(parziali['OUTPUT'], context, feedback, "Componenti parziali")
+            
+            # Avviso se non ci sono componenti interi (problema per le statistiche)
+            if count_interi == 0:
+                feedback.pushWarning("ATTENZIONE: Nessun componente intero trovato! Le statistiche potrebbero essere incomplete.")
+            
+            # Avviso se ci sono solo interi o solo parziali
+            if count_parziali == 0:
+                feedback.pushInfo("INFO: Nessun componente parziale trovato.")
+            
+            feedback.setCurrentStep(7)
+            
+            # ============ FASE 6: CALCOLO RANGE ============
+            feedback.pushInfo("\n--- CALCOLO RANGE ---")
+            
+            # Range width (formula semplificata e piu' robusta)
+            with_width_range = processing.run('native:fieldcalculator', {
+                'INPUT': interi['OUTPUT'],
+                'FIELD_NAME': 'width_bbox_range',
+                'FIELD_TYPE': 2,
+                'FORMULA': f'''CASE 
+    WHEN "width_bbox" IS NULL THEN 'N/A'
+    ELSE concat(
+        round(floor("width_bbox"/{width_step})*{width_step}, 4),
+        ' - ',
+        round((floor("width_bbox"/{width_step})+1)*{width_step}, 4)
+    )
+END''',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Range height (formula semplificata e piu' robusta)
+            with_both_ranges = processing.run('native:fieldcalculator', {
+                'INPUT': with_width_range['OUTPUT'],
+                'FIELD_NAME': 'height_bbox_range',
+                'FIELD_TYPE': 2,
+                'FORMULA': f'''CASE 
+    WHEN "height_bbox" IS NULL THEN 'N/A'
+    ELSE concat(
+        round(floor("height_bbox"/{height_step})*{height_step}, 4),
+        ' - ',
+        round((floor("height_bbox"/{height_step})+1)*{height_step}, 4)
+    )
+END''',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(8)
+            
+            # ============ FASE 7: STATISTICHE ============
+            feedback.pushInfo("\n--- STATISTICHE ---")
+            
+            # Statistiche per campione
+            stat_area_int = processing.run('qgis:statisticsbycategories', {
+                'INPUT': interi['OUTPUT'],
+                'CATEGORIES_FIELD_NAME': ['campione'],
+                'VALUES_FIELD_NAME': 'area_componente',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            stat_area_parz = processing.run('qgis:statisticsbycategories', {
+                'INPUT': parziali['OUTPUT'],
+                'CATEGORIES_FIELD_NAME': ['campione'],
+                'VALUES_FIELD_NAME': 'area_componente',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            stat_width = processing.run('qgis:statisticsbycategories', {
+                'INPUT': interi['OUTPUT'],
+                'CATEGORIES_FIELD_NAME': ['campione'],
+                'VALUES_FIELD_NAME': 'width_bbox',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            stat_height = processing.run('qgis:statisticsbycategories', {
+                'INPUT': interi['OUTPUT'],
+                'CATEGORIES_FIELD_NAME': ['campione'],
+                'VALUES_FIELD_NAME': 'height_bbox',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(9)
+            
+            # Conteggi per range
+            count_width = processing.run('qgis:statisticsbycategories', {
+                'INPUT': with_both_ranges['OUTPUT'],
+                'CATEGORIES_FIELD_NAME': ['campione', 'width_bbox_range'],
+                'VALUES_FIELD_NAME': '',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            count_height = processing.run('qgis:statisticsbycategories', {
+                'INPUT': with_both_ranges['OUTPUT'],
+                'CATEGORIES_FIELD_NAME': ['campione', 'height_bbox_range'],
+                'VALUES_FIELD_NAME': '',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Ordina e salva
+            sorted_width = processing.run('native:orderbyexpression', {
+                'INPUT': count_width['OUTPUT'],
+                'EXPRESSION': 'width_bbox_range',
+                'ASCENDING': True,
+                'OUTPUT': parameters['output_width_range']
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            results['output_width_range'] = sorted_width['OUTPUT']
+            context.layerToLoadOnCompletionDetails(results['output_width_range']).name = "conteggio_range_larghezza"
+            
+            sorted_height = processing.run('native:orderbyexpression', {
+                'INPUT': count_height['OUTPUT'],
+                'EXPRESSION': 'height_bbox_range',
+                'ASCENDING': True,
+                'OUTPUT': parameters['output_height_range']
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            results['output_height_range'] = sorted_height['OUTPUT']
+            context.layerToLoadOnCompletionDetails(results['output_height_range']).name = "conteggio_range_altezza"
+            feedback.setCurrentStep(10)
+            
+            # ============ FASE 8: ANALISI RILIEVO ============
+            feedback.pushInfo("\n--- ANALISI RILIEVO ---")
+            
+            # Join rilievo con bbox
+            rilievo_bbox_temp = processing.run('native:joinattributestable', {
+                'INPUT': layer_base,
+                'INPUT_2': bbox_final['OUTPUT'],
+                'FIELD': 'fid',
+                'FIELD_2': 'fid',
+                'FIELDS_TO_COPY': ['width_bbox', 'height_bbox', 'angle_bbox', 'perimeter_bbox', 'area_bbox'],
+                'DISCARD_NONMATCHING': True,
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Riorganizza campi come min_oriented_bbox
+            rilievo_bbox = processing.run('native:refactorfields', {
+                'INPUT': rilievo_bbox_temp['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"fid"', 'name': 'fid', 'type': 4, 'length': 0, 'precision': 0},
+                    {'expression': '"sito"', 'name': 'sito', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"usm"', 'name': 'usm', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"num_componente"', 'name': 'num_componente', 'type': 4, 'length': 0, 'precision': 0},
+                    {'expression': '"tipo"', 'name': 'tipo', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"superficie"', 'name': 'superficie', 'type': 10, 'length': 0, 'precision': 0},
+                    {'expression': '"area_componente"', 'name': 'area_componente', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"width_bbox"', 'name': 'width_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"height_bbox"', 'name': 'height_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"angle_bbox"', 'name': 'angle_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"perimeter_bbox"', 'name': 'perimeter_bbox', 'type': 6, 'length': 6, 'precision': 4},
+                    {'expression': '"area_bbox"', 'name': 'area_bbox', 'type': 6, 'length': 6, 'precision': 4}
+                ],
+                'OUTPUT': parameters['output_rilievo']
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            results['output_rilievo'] = rilievo_bbox['OUTPUT']
+            context.layerToLoadOnCompletionDetails(results['output_rilievo']).name = "analisi_rilievo"
+            self.verifica_features(results['output_rilievo'], context, feedback, "Analisi rilievo FINALE")
+            feedback.setCurrentStep(11)
+            
+            # ============ FASE 9: AGGREGAZIONE STATISTICHE CON CAMPIONI ============
+            feedback.pushInfo("\n--- AGGREGAZIONE STATISTICHE CAMPIONI ---")
+            
+            # Rinomina layer per merge
+            stat_area_int_renamed = processing.run('native:renamelayer', {
+                'INPUT': stat_area_int['OUTPUT'],
+                'NAME': 'stat_area_int'
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            stat_area_parz_renamed = processing.run('native:renamelayer', {
+                'INPUT': stat_area_parz['OUTPUT'],
+                'NAME': 'stat_area_parz'
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            stat_width_renamed = processing.run('native:renamelayer', {
+                'INPUT': stat_width['OUTPUT'],
+                'NAME': 'stat_width_bbox'
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            stat_height_renamed = processing.run('native:renamelayer', {
+                'INPUT': stat_height['OUTPUT'],
+                'NAME': 'stat_height_bbox'
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Merge tutte le statistiche
+            merged_stats = processing.run('native:mergevectorlayers', {
+                'LAYERS': [
+                    stat_area_int_renamed['OUTPUT'],
+                    stat_area_parz_renamed['OUTPUT'],
+                    stat_width_renamed['OUTPUT'],
+                    stat_height_renamed['OUTPUT']
+                ],
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Riorganizza merged stats
+            stats_reorganized = processing.run('native:refactorfields', {
+                'INPUT': merged_stats['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10},
+                    {'expression': '"layer"', 'name': 'stat_type', 'type': 10},
+                    {'expression': '"count"', 'name': 'count', 'type': 2},
+                    {'expression': '"min"', 'name': 'min', 'type': 6},
+                    {'expression': '"max"', 'name': 'max', 'type': 6},
+                    {'expression': '"range"', 'name': 'range', 'type': 6},
+                    {'expression': '"sum"', 'name': 'sum', 'type': 6},
+                    {'expression': '"mean"', 'name': 'mean', 'type': 6},
+                    {'expression': '"stddev"', 'name': 'stddev', 'type': 6}
+                ],
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(12)
+            
+            # ============ FASE 10: ESTRAZIONE E JOIN STATISTICHE PER TIPO ============
+            feedback.pushInfo("\n--- PREPARAZIONE STATISTICHE PER CAMPIONE ---")
+            
+            # Estrai ogni tipo di statistica
+            extract_area_parz = processing.run('native:extractbyattribute', {
+                'INPUT': stats_reorganized['OUTPUT'],
+                'FIELD': 'stat_type',
+                'OPERATOR': 0,
+                'VALUE': 'stat_area_parz',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            extract_area_int = processing.run('native:extractbyattribute', {
+                'INPUT': stats_reorganized['OUTPUT'],
+                'FIELD': 'stat_type',
+                'OPERATOR': 0,
+                'VALUE': 'stat_area_int',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            extract_width = processing.run('native:extractbyattribute', {
+                'INPUT': stats_reorganized['OUTPUT'],
+                'FIELD': 'stat_type',
+                'OPERATOR': 0,
+                'VALUE': 'stat_width_bbox',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            extract_height = processing.run('native:extractbyattribute', {
+                'INPUT': stats_reorganized['OUTPUT'],
+                'FIELD': 'stat_type',
+                'OPERATOR': 0,
+                'VALUE': 'stat_height_bbox',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Join con campioni per aggiungere info geografiche
+            # FIELDS_TO_COPY specifica solo i campi necessari per evitare duplicazioni
+            area_parz_campioni = processing.run('native:joinattributestable', {
+                'INPUT': extract_area_parz['OUTPUT'],
+                'INPUT_2': parameters['layer_campioni'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': ['sito', 'ambiente', 'usm', 'area_campione'],
+                'DISCARD_NONMATCHING': True,
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            area_int_campioni = processing.run('native:joinattributestable', {
+                'INPUT': extract_area_int['OUTPUT'],
+                'INPUT_2': parameters['layer_campioni'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': ['sito', 'ambiente', 'usm', 'area_campione'],
+                'DISCARD_NONMATCHING': True,
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            width_campioni = processing.run('native:joinattributestable', {
+                'INPUT': extract_width['OUTPUT'],
+                'INPUT_2': parameters['layer_campioni'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': [],
+                'DISCARD_NONMATCHING': True,
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            height_campioni = processing.run('native:joinattributestable', {
+                'INPUT': extract_height['OUTPUT'],
+                'INPUT_2': parameters['layer_campioni'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': [],
+                'DISCARD_NONMATCHING': True,
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(13)
+            
+            # Riorganizza campi per ogni statistica
+            refactor_area_parz = processing.run('native:refactorfields', {
+                'INPUT': area_parz_campioni['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"sito"', 'name': 'sito', 'type': 10},
+                    {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10},
+                    {'expression': '"usm"', 'name': 'usm', 'type': 10},
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10},
+                    {'expression': '"area_campione"', 'name': 'area campione', 'type': 6, 'precision': 4},
+                    {'expression': '"count"', 'name': 'num. laterizi parziali', 'type': 2},
+                    {'expression': '"sum"', 'name': 'totale area laterizi parziali', 'type': 6, 'precision': 4}
+                ],
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # CORREZIONE: campo "area_campione" invece di "area"
+            refactor_area_int = processing.run('native:refactorfields', {
+                'INPUT': area_int_campioni['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"sito"', 'name': 'sito', 'type': 10},
+                    {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10},
+                    {'expression': '"usm"', 'name': 'usm', 'type': 10},
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10},
+                    {'expression': '"area_campione"', 'name': 'area campione', 'type': 6, 'precision': 4},
+                    {'expression': '"count"', 'name': 'num. laterizi interi', 'type': 2},
+                    {'expression': '"sum"', 'name': 'totale area laterizi interi', 'type': 6, 'precision': 4},
+                    {'expression': '"mean"', 'name': 'media area laterizi interi', 'type': 6, 'precision': 4}
+                ],
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            refactor_width = processing.run('native:refactorfields', {
+                'INPUT': width_campioni['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10},
+                    {'expression': '"min"', 'name': 'width_min', 'type': 6, 'precision': 4},
+                    {'expression': '"max"', 'name': 'width_max', 'type': 6, 'precision': 4},
+                    {'expression': '"range"', 'name': 'width_range', 'type': 6, 'precision': 4},
+                    {'expression': '"mean"', 'name': 'width_mean', 'type': 6, 'precision': 4},
+                    {'expression': '"stddev"', 'name': 'width_stddev', 'type': 6, 'precision': 4}
+                ],
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            refactor_height = processing.run('native:refactorfields', {
+                'INPUT': height_campioni['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10},
+                    {'expression': '"min"', 'name': 'height_min', 'type': 6, 'precision': 4},
+                    {'expression': '"max"', 'name': 'height_max', 'type': 6, 'precision': 4},
+                    {'expression': '"range"', 'name': 'height_range', 'type': 6, 'precision': 4},
+                    {'expression': '"mean"', 'name': 'height_mean', 'type': 6, 'precision': 4},
+                    {'expression': '"stddev"', 'name': 'height_stddev', 'type': 6, 'precision': 4}
+                ],
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(14)
+            
+            # ============ FASE 11: JOIN PROGRESSIVI ============
+            feedback.pushInfo("\n--- JOIN STATISTICHE ---")
+            
+            # Join area_parz + area_int
+            join1 = processing.run('native:joinattributestable', {
+                'INPUT': refactor_area_parz['OUTPUT'],
+                'INPUT_2': refactor_area_int['OUTPUT'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': ['num. laterizi interi', 'totale area laterizi interi', 'media area laterizi interi'],
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Join + width
+            join2 = processing.run('native:joinattributestable', {
+                'INPUT': join1['OUTPUT'],
+                'INPUT_2': refactor_width['OUTPUT'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': ['width_min', 'width_max', 'width_range', 'width_mean', 'width_stddev'],
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Join + height
+            join3 = processing.run('native:joinattributestable', {
+                'INPUT': join2['OUTPUT'],
+                'INPUT_2': refactor_height['OUTPUT'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': ['height_min', 'height_max', 'height_range', 'height_mean', 'height_stddev'],
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(15)
+            
+            # ============ FASE 12: CALCOLI FINALI ============
+            feedback.pushInfo("\n--- CALCOLI FINALI ---")
+            
+            # Calcolo num. laterizi interi calcolati (con gestione NULL robusta)
+            calc1 = processing.run('native:fieldcalculator', {
+                'INPUT': join3['OUTPUT'],
+                'FIELD_NAME': 'num. laterizi interi calcolati',
+                'FIELD_TYPE': 0,
+                'FORMULA': '''CASE 
+    WHEN "media area laterizi interi" IS NULL OR "media area laterizi interi" = 0 THEN 0
+    WHEN "totale area laterizi parziali" IS NULL THEN 0
+    ELSE round("totale area laterizi parziali" / "media area laterizi interi", 0)
+END''',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Calcolo totale laterizi interi calcolati
+            calc2 = processing.run('native:fieldcalculator', {
+                'INPUT': calc1['OUTPUT'],
+                'FIELD_NAME': 'totale laterizi interi calcolati',
+                'FIELD_TYPE': 0,
+                'FORMULA': 'round(COALESCE("num. laterizi interi", 0) + COALESCE("num. laterizi interi calcolati", 0), 0)',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Calcolo totale area laterizi (somma interi + parziali)
+            calc3 = processing.run('native:fieldcalculator', {
+                'INPUT': calc2['OUTPUT'],
+                'FIELD_NAME': 'totale area laterizi',
+                'FIELD_TYPE': 0,
+                'FORMULA': 'round(COALESCE("totale area laterizi interi", 0) + COALESCE("totale area laterizi parziali", 0), 4)',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Calcolo totale area malta
+            calc4 = processing.run('native:fieldcalculator', {
+                'INPUT': calc3['OUTPUT'],
+                'FIELD_NAME': 'totale area malta',
+                'FIELD_TYPE': 0,
+                'FORMULA': 'round(COALESCE("area campione", 0) - COALESCE("totale area laterizi", 0), 4)',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Calcolo rapporto laterizi/malta (con gestione divisione per zero)
+            calc5 = processing.run('native:fieldcalculator', {
+                'INPUT': calc4['OUTPUT'],
+                'FIELD_NAME': 'rapporto laterizi/malta',
+                'FIELD_TYPE': 2,
+                'FORMULA': '''CASE 
+    WHEN "totale area malta" IS NULL OR "totale area malta" <= 0 THEN NULL
+    WHEN "totale area laterizi" IS NULL THEN NULL
+    ELSE round("totale area laterizi" / "totale area malta", 2)
+END''',
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            feedback.setCurrentStep(16)
+            
+            # ============ FASE 13: OUTPUT TABELLA COMPLETA ============
+            feedback.pushInfo("\n--- CREAZIONE TABELLA ANALISI CAMPIONI ---")
+            
+            # Riorganizza campi finali per tabella
+            table_final = processing.run('native:refactorfields', {
+                'INPUT': calc5['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"sito"', 'name': 'sito', 'type': 10},
+                    {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10},
+                    {'expression': '"usm"', 'name': 'usm', 'type': 10},
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10},
+                    {'expression': '"area campione"', 'name': 'area_campione', 'type': 6, 'precision': 4},
+                    {'expression': '"num. laterizi interi"', 'name': 'num_laterizi_interi', 'type': 2},
+                    {'expression': '"totale area laterizi interi"', 'name': 'totale_area_laterizi_interi', 'type': 6, 'precision': 4},
+                    {'expression': '"media area laterizi interi"', 'name': 'media_area_laterizi_interi', 'type': 6, 'precision': 4},
+                    {'expression': '"num. laterizi parziali"', 'name': 'num_laterizi_parziali', 'type': 2},
+                    {'expression': '"totale area laterizi parziali"', 'name': 'totale_area_laterizi_parziali', 'type': 6, 'precision': 4},
+                    {'expression': '"num. laterizi interi calcolati"', 'name': 'num_laterizi_interi_calcolati', 'type': 2},
+                    {'expression': '"totale laterizi interi calcolati"', 'name': 'totale_laterizi_interi_calcolati', 'type': 2},
+                    {'expression': '"totale area laterizi"', 'name': 'totale_area_laterizi', 'type': 6, 'precision': 4},
+                    {'expression': '"totale area malta"', 'name': 'totale_area_malta', 'type': 6, 'precision': 4},
+                    {'expression': '"rapporto laterizi/malta"', 'name': 'rapporto_laterizi/malta', 'type': 6, 'precision': 2},
+                    {'expression': '"width_min"', 'name': 'width_min', 'type': 6, 'precision': 4},
+                    {'expression': '"width_max"', 'name': 'width_max', 'type': 6, 'precision': 4},
+                    {'expression': '"width_range"', 'name': 'width_range', 'type': 6, 'precision': 4},
+                    {'expression': '"width_mean"', 'name': 'width_mean', 'type': 6, 'precision': 4},
+                    {'expression': '"width_stddev"', 'name': 'width_stddev', 'type': 6, 'precision': 4},
+                    {'expression': '"height_min"', 'name': 'height_min', 'type': 6, 'precision': 4},
+                    {'expression': '"height_max"', 'name': 'height_max', 'type': 6, 'precision': 4},
+                    {'expression': '"height_range"', 'name': 'height_range', 'type': 6, 'precision': 4},
+                    {'expression': '"height_mean"', 'name': 'height_mean', 'type': 6, 'precision': 4},
+                    {'expression': '"height_stddev"', 'name': 'height_stddev', 'type': 6, 'precision': 4}
+                ],
+                'OUTPUT': parameters['output_campioni_table']
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            results['output_campioni_table'] = table_final['OUTPUT']
+            context.layerToLoadOnCompletionDetails(results['output_campioni_table']).name = "analisi_campioni_table"
+            self.verifica_features(results['output_campioni_table'], context, feedback, "Tabella analisi campioni")
+            feedback.setCurrentStep(17)
+            
+            # ============ FASE 14: OUTPUT CAMPIONI GEOGRAFICO ============
+            feedback.pushInfo("\n--- CREAZIONE LAYER CAMPIONI GEOGRAFICO ---")
+            
+            # Join tabella completa con layer campioni
+            campioni_geo = processing.run('native:joinattributestable', {
+                'INPUT': parameters['layer_campioni'],
+                'INPUT_2': table_final['OUTPUT'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': [
+                    'num_laterizi_interi', 'totale_area_laterizi_interi', 'media_area_laterizi_interi',
+                    'num_laterizi_parziali', 'totale_area_laterizi_parziali', 'num_laterizi_interi_calcolati',
+                    'totale_laterizi_interi_calcolati', 'totale_area_laterizi', 'totale_area_malta',
+                    'rapporto_laterizi/malta', 'width_min', 'width_max', 'width_range', 'width_mean',
+                    'width_stddev', 'height_min', 'height_max', 'height_range', 'height_mean', 'height_stddev'
+                ],
+                'DISCARD_NONMATCHING': True,
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Riorganizza campi campioni geografico
+            campioni_final = processing.run('native:refactorfields', {
+                'INPUT': campioni_geo['OUTPUT'],
+                'FIELDS_MAPPING': [
+                    {'expression': '"fid"', 'name': 'fid', 'type': 4},
+                    {'expression': '"sito"', 'name': 'sito', 'type': 10},
+                    {'expression': '"usm"', 'name': 'usm', 'type': 10},
+                    {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10},
+                    {'expression': '"campione"', 'name': 'campione', 'type': 10},
+                    {'expression': '"area_campione"', 'name': 'area_campione', 'type': 6, 'precision': 4},
+                    {'expression': '"num_laterizi_parziali"', 'name': 'num_laterizi_parziali', 'type': 2},
+                    {'expression': '"totale_area_laterizi_parziali"', 'name': 'totale_area_laterizi_parziali', 'type': 6, 'precision': 4},
+                    {'expression': '"num_laterizi_interi"', 'name': 'num_laterizi_interi', 'type': 2},
+                    {'expression': '"totale_area_laterizi_interi"', 'name': 'totale_area_laterizi_interi', 'type': 6, 'precision': 4},
+                    {'expression': '"media_area_laterizi_interi"', 'name': 'media_area_laterizi_interi', 'type': 6, 'precision': 4},
+                    {'expression': '"num_laterizi_interi_calcolati"', 'name': 'num_laterizi_interi_calcolati', 'type': 2},
+                    {'expression': '"totale_laterizi_interi_calcolati"', 'name': 'totale_laterizi_interi_calcolati', 'type': 2},
+                    {'expression': '"totale_area_laterizi"', 'name': 'totale_area_laterizi', 'type': 6, 'precision': 4},
+                    {'expression': '"totale_area_malta"', 'name': 'totale_area_malta', 'type': 6, 'precision': 4},
+                    {'expression': '"rapporto_laterizi/malta"', 'name': 'rapporto_laterizi/malta', 'type': 6, 'precision': 2},
+                    {'expression': '"width_min"', 'name': 'width_min', 'type': 6, 'precision': 4},
+                    {'expression': '"width_max"', 'name': 'width_max', 'type': 6, 'precision': 4},
+                    {'expression': '"width_range"', 'name': 'width_range', 'type': 6, 'precision': 4},
+                    {'expression': '"width_mean"', 'name': 'width_mean', 'type': 6, 'precision': 4},
+                    {'expression': '"width_stddev"', 'name': 'width_stddev', 'type': 6, 'precision': 4},
+                    {'expression': '"height_min"', 'name': 'height_min', 'type': 6, 'precision': 4},
+                    {'expression': '"height_max"', 'name': 'height_max', 'type': 6, 'precision': 4},
+                    {'expression': '"height_range"', 'name': 'height_range', 'type': 6, 'precision': 4},
+                    {'expression': '"height_mean"', 'name': 'height_mean', 'type': 6, 'precision': 4},
+                    {'expression': '"height_stddev"', 'name': 'height_stddev', 'type': 6, 'precision': 4}
+                ],
+                'OUTPUT': parameters['output_campioni']
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            results['output_campioni'] = campioni_final['OUTPUT']
+            context.layerToLoadOnCompletionDetails(results['output_campioni']).name = "analisi_campioni"
+            self.verifica_features(results['output_campioni'], context, feedback, "Analisi campioni geografico")
+            feedback.setCurrentStep(18)
+            
+            # ============ FASE 15: RINOMINA LAYER ============
+            feedback.pushInfo("\n--- RINOMINA LAYER DI OUTPUT ---")
+            
+            # Dizionario con i nomi prestabiliti
+            nomi_layer = {
+                'output_bbox': 'min_oriented_bbox',
+                'output_rilievo': 'analisi_rilievo',
+                'output_campioni_table': 'analisi_campioni_table',
+                'output_campioni': 'analisi_campioni',
+                'output_width_range': 'conteggio_range_larghezza',
+                'output_height_range': 'conteggio_range_altezza'
+            }
+            
+            # Rinomina ogni layer
+            for key, nome in nomi_layer.items():
+                if key in results:
+                    try:
+                        renamed = processing.run('native:renamelayer', {
+                            'INPUT': results[key],
+                            'NAME': nome
+                        }, context=context, feedback=feedback, is_child_algorithm=True)
+                        results[key] = renamed['OUTPUT']
+                        feedback.pushInfo(f"  * {key} --> {nome}")
+                    except Exception as e:
+                        feedback.pushWarning(f"Impossibile rinominare {key}: {str(e)}")
+            
+            feedback.setCurrentStep(19)
+            
+            # ============ FASE 16: APPLICAZIONE STILI ============
+            feedback.pushInfo("\n--- APPLICAZIONE STILI ---")
+            
+            self.applica_stile(results['output_bbox'], stili['bbox'], context, feedback, 'bbox')
+            self.applica_stile(results['output_rilievo'], stili['rilievo'], context, feedback, 'rilievo')
+            self.applica_stile(results['output_campioni_table'], stili['campioni_table'], context, feedback, 'campioni_table')
+            self.applica_stile(results['output_campioni'], stili['campioni'], context, feedback, 'campioni')
+            
+            feedback.setCurrentStep(20)
+            
+            # ============ RIEPILOGO ============
+            feedback.pushInfo("\n" + "="*70)
+            feedback.pushInfo("ELABORAZIONE COMPLETATA CON SUCCESSO")
+            feedback.pushInfo("="*70)
+            
+            feedback.pushInfo("\n[RIEPILOGO ELABORAZIONE]")
+            feedback.pushInfo(f"Componenti totali analizzati: {count_interi + count_parziali}")
+            feedback.pushInfo(f"  - Componenti interi: {count_interi}")
+            feedback.pushInfo(f"  - Componenti parziali: {count_parziali}")
+            
+            if applica_filtro:
+                feedback.pushInfo(f"\n[FILTRO APPLICATO]")
+                feedback.pushInfo(f"Tipi materiale: {', '.join(tipi)}")
+                if includi_null:
+                    feedback.pushInfo("Include non classificati: SI")
+            else:
+                feedback.pushInfo("\n[NESSUN FILTRO] - Tutti i materiali inclusi")
+            
+            feedback.pushInfo("\n[PARAMETRI RANGE]")
+            feedback.pushInfo(f"Step larghezza: {width_step} m")
+            feedback.pushInfo(f"Step altezza: {height_step} m")
+            
+            feedback.pushInfo("\n[OUTPUT GENERATI]")
+            for name in results.keys():
+                layer = QgsProcessingUtils.mapLayerFromString(results[name], context)
+                if layer:
+                    feedback.pushInfo(f"  * {layer.name()}: {layer.featureCount()} features")
+            
+            feedback.pushInfo("\n" + "="*70)
+            
+            return results
+            
+        except Exception as e:
+            feedback.reportError(f"\nERRORE: {str(e)}")
+            import traceback
+            feedback.reportError(traceback.format_exc())
+            raise
+
+    def name(self):
+        return 'analisi_filtrata_ottimizzato'
+
+    def displayName(self):
+        return 'Opera laterizia'
+
+    def group(self):
+        return 'Analisi'
+
+    def groupId(self):
+        return 'analisi'
+
+    def createInstance(self):
+        return AnalisiFiltrata()
+
+    def shortHelpString(self):
+        return """
+        
+        <p>Questo script analizza geometrie di componenti murari in opera laterizia calcolando statistiche su dimensioni, aree e distribuzioni dei materiali.</p>
+        
+        <h4>Parametri di Input:</h4>
+        <ul>
+            <li><b>Layer rilievo:</b> Layer poligonale con i componenti murari</li>
+            <li><b>Layer campioni:</b> Layer con i campioni di muratura</li>
+            <li><b>Tipo di materiale:</b> Lista separata da virgole (es: "laterizio,blocco") o vuoto per includere tutti i tipi</li>
+            <li><b>Includi non classificati:</b> Se attivo, include elementi con tipo NULL</li>
+            <li><b>Step range larghezza/altezza:</b> Incremento per il calcolo dei range (in metri)</li>
+            <li><b>Stili (opzionali):</b> File QML per personalizzare la visualizzazione</li>
+        </ul>
+        
+        <h4>Output Generati:</h4>
+        <ul>
+            <li><b>min_oriented_bbox:</b> Rettangoli orientati minimi per ogni componente</li>
+            <li><b>analisi_rilievo:</b> Layer rilievo arricchito con metriche bbox</li>
+            <li><b>analisi_campioni_table:</b> Tabella statistiche per campione (senza geometria)</li>
+            <li><b>analisi_campioni:</b> Layer campioni con statistiche aggregate</li>
+            <li><b>conteggio_range_larghezza:</b> Distribuzione componenti per range larghezza</li>
+            <li><b>conteggio_range_altezza:</b> Distribuzione componenti per range altezza</li>
+        </ul>
+        
+        <h4>Note Importanti:</h4>
+        <ul>
+            <li>Il layer rilievo deve contenere i campi: fid, tipo, superficie, area_componente, num_componente</li>
+            <li>Il layer campioni deve contenere i campi: campione, sito, ambiente, usm, area_campione</li>
+            <li>I componenti vengono separati in "interi" e "parziali" in base al campo "superficie"</li>
+            <li>Le statistiche vengono calcolate solo sui componenti interi</li>
+            <li>Il filtro materiali e' case-sensitive</li>
+        </ul>
+        
+        <h4>Versione: 0.3</h4>
+        """
