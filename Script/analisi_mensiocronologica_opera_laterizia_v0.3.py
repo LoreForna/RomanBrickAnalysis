@@ -1,5 +1,5 @@
 """
-SCRIPT ANALISI MENSIOCRONOLOGICA PER OPERA LATERIZIA
+SCRIPT ANALISI MENSIOCRONOLOGICA PER OPERA LATERIZIA - VERSIONE OTTIMIZZATA
 """
 
 from qgis.core import (
@@ -169,7 +169,7 @@ class AnalisiFiltrata(QgsProcessingAlgorithm):
                 feedback.pushWarning(f"Impossibile applicare stile {nome_layer}: {str(e)}")
 
     def processAlgorithm(self, parameters, context, model_feedback):
-        feedback = QgsProcessingMultiStepFeedback(20, model_feedback)
+        feedback = QgsProcessingMultiStepFeedback(19, model_feedback)
         results = {}
         
         try:
@@ -558,194 +558,120 @@ END''',
             
             feedback.setCurrentStep(12)
             
-            # ============ FASE 10: ESTRAZIONE E JOIN STATISTICHE PER TIPO ============
-            feedback.pushInfo("\n--- PREPARAZIONE STATISTICHE PER CAMPIONE ---")
+            # ============ FASE 10: JOIN SEQUENZIALE OTTIMIZZATO ============
+            feedback.pushInfo("\n--- JOIN STATISTICHE (OTTIMIZZATO) ---")
             
-            # Estrai ogni tipo di statistica
-            extract_area_parz = processing.run('native:extractbyattribute', {
+            # Strategia: partire da campioni e aggiungere progressivamente le statistiche
+            # Questo elimina ridondanze: 4 join sequenziali + 1 refactor invece di 11 operazioni
+            
+            # Estrai e prepara ogni tipo di statistica
+            stat_area_parz = processing.run('native:extractbyexpression', {
                 'INPUT': stats_reorganized['OUTPUT'],
-                'FIELD': 'stat_type',
-                'OPERATOR': 0,
-                'VALUE': 'stat_area_parz',
+                'EXPRESSION': '"stat_type" = \'stat_area_parz\'',
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
-            extract_area_int = processing.run('native:extractbyattribute', {
+            stat_area_int = processing.run('native:extractbyexpression', {
                 'INPUT': stats_reorganized['OUTPUT'],
-                'FIELD': 'stat_type',
-                'OPERATOR': 0,
-                'VALUE': 'stat_area_int',
+                'EXPRESSION': '"stat_type" = \'stat_area_int\'',
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
-            extract_width = processing.run('native:extractbyattribute', {
+            stat_width = processing.run('native:extractbyexpression', {
                 'INPUT': stats_reorganized['OUTPUT'],
-                'FIELD': 'stat_type',
-                'OPERATOR': 0,
-                'VALUE': 'stat_width_bbox',
+                'EXPRESSION': '"stat_type" = \'stat_width_bbox\'',
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
-            extract_height = processing.run('native:extractbyattribute', {
+            stat_height = processing.run('native:extractbyexpression', {
                 'INPUT': stats_reorganized['OUTPUT'],
-                'FIELD': 'stat_type',
-                'OPERATOR': 0,
-                'VALUE': 'stat_height_bbox',
+                'EXPRESSION': '"stat_type" = \'stat_height_bbox\'',
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
-            # PRIMA DEL JOIN: prepara tabelle statistiche con solo i campi necessari
-            # Questo evita conflitti durante il join
-            stat_parz_clean = processing.run('native:refactorfields', {
-                'INPUT': extract_area_parz['OUTPUT'],
-                'FIELDS_MAPPING': [
-                    {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': 'CASE WHEN "count" IS NULL THEN NULL ELSE to_int("count") END', 'name': 'count_parz', 'type': 2, 'length': 0, 'precision': 0},
-                    {'expression': 'CASE WHEN "sum" IS NULL THEN NULL ELSE to_real("sum") END', 'name': 'sum_parz', 'type': 6, 'length': 0, 'precision': 4}
-                ],
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            stat_int_clean = processing.run('native:refactorfields', {
-                'INPUT': extract_area_int['OUTPUT'],
-                'FIELDS_MAPPING': [
-                    {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': 'CASE WHEN "count" IS NULL THEN NULL ELSE to_int("count") END', 'name': 'count_int', 'type': 2, 'length': 0, 'precision': 0},
-                    {'expression': 'CASE WHEN "sum" IS NULL THEN NULL ELSE to_real("sum") END', 'name': 'sum_int', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "mean" IS NULL THEN NULL ELSE to_real("mean") END', 'name': 'mean_int', 'type': 6, 'length': 0, 'precision': 4}
-                ],
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            stat_width_clean = processing.run('native:refactorfields', {
-                'INPUT': extract_width['OUTPUT'],
-                'FIELDS_MAPPING': [
-                    {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': 'CASE WHEN "min" IS NULL THEN NULL ELSE to_real("min") END', 'name': 'width_min', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "max" IS NULL THEN NULL ELSE to_real("max") END', 'name': 'width_max', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "range" IS NULL THEN NULL ELSE to_real("range") END', 'name': 'width_range', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "mean" IS NULL THEN NULL ELSE to_real("mean") END', 'name': 'width_mean', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "stddev" IS NULL THEN NULL ELSE to_real("stddev") END', 'name': 'width_stddev', 'type': 6, 'length': 0, 'precision': 4}
-                ],
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            stat_height_clean = processing.run('native:refactorfields', {
-                'INPUT': extract_height['OUTPUT'],
-                'FIELDS_MAPPING': [
-                    {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': 'CASE WHEN "min" IS NULL THEN NULL ELSE to_real("min") END', 'name': 'height_min', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "max" IS NULL THEN NULL ELSE to_real("max") END', 'name': 'height_max', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "range" IS NULL THEN NULL ELSE to_real("range") END', 'name': 'height_range', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "mean" IS NULL THEN NULL ELSE to_real("mean") END', 'name': 'height_mean', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': 'CASE WHEN "stddev" IS NULL THEN NULL ELSE to_real("stddev") END', 'name': 'height_stddev', 'type': 6, 'length': 0, 'precision': 4}
-                ],
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            # ORA fai il join con il layer campioni - senza specificare FIELDS_TO_COPY
-            area_parz_campioni = processing.run('native:joinattributestable', {
-                'INPUT': stat_parz_clean['OUTPUT'],
-                'INPUT_2': parameters['layer_campioni'],
+            # Join sequenziale: campioni + parz + int + width + height
+            campioni_parz = processing.run('native:joinattributestable', {
+                'INPUT': parameters['layer_campioni'],
+                'INPUT_2': stat_area_parz['OUTPUT'],
                 'FIELD': 'campione',
                 'FIELD_2': 'campione',
-                'DISCARD_NONMATCHING': True,
+                'FIELDS_TO_COPY': ['count', 'sum'],
+                'PREFIX': 'parz_',
                 'METHOD': 1,
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
-            area_int_campioni = processing.run('native:joinattributestable', {
-                'INPUT': stat_int_clean['OUTPUT'],
-                'INPUT_2': parameters['layer_campioni'],
+            campioni_parz_int = processing.run('native:joinattributestable', {
+                'INPUT': campioni_parz['OUTPUT'],
+                'INPUT_2': stat_area_int['OUTPUT'],
                 'FIELD': 'campione',
                 'FIELD_2': 'campione',
-                'DISCARD_NONMATCHING': True,
+                'FIELDS_TO_COPY': ['count', 'sum', 'mean'],
+                'PREFIX': 'int_',
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            campioni_parz_int_width = processing.run('native:joinattributestable', {
+                'INPUT': campioni_parz_int['OUTPUT'],
+                'INPUT_2': stat_width['OUTPUT'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': ['min', 'max', 'range', 'mean', 'stddev'],
+                'PREFIX': 'width_',
+                'METHOD': 1,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            all_stats = processing.run('native:joinattributestable', {
+                'INPUT': campioni_parz_int_width['OUTPUT'],
+                'INPUT_2': stat_height['OUTPUT'],
+                'FIELD': 'campione',
+                'FIELD_2': 'campione',
+                'FIELDS_TO_COPY': ['min', 'max', 'range', 'mean', 'stddev'],
+                'PREFIX': 'height_',
                 'METHOD': 1,
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
             feedback.setCurrentStep(13)
             
-            # Riorganizza campi dopo il join - usando i nomi corretti
-            refactor_area_parz = processing.run('native:refactorfields', {
-                'INPUT': area_parz_campioni['OUTPUT'],
+            # Un unico refactor con tutti i campi (conversioni di tipo incluse)
+            all_stats_final = processing.run('native:refactorfields', {
+                'INPUT': all_stats['OUTPUT'],
                 'FIELDS_MAPPING': [
                     {'expression': '"sito"', 'name': 'sito', 'type': 10, 'length': 0, 'precision': 0},
                     {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10, 'length': 0, 'precision': 0},
                     {'expression': '"usm"', 'name': 'usm', 'type': 10, 'length': 0, 'precision': 0},
                     {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
                     {'expression': 'to_real("area_campione")', 'name': 'area campione', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': '"count_parz"', 'name': 'num. laterizi parziali', 'type': 2, 'length': 0, 'precision': 0},
-                    {'expression': '"sum_parz"', 'name': 'totale area laterizi parziali', 'type': 6, 'length': 0, 'precision': 4}
+                    {'expression': 'to_int("parz_count")', 'name': 'num. laterizi parziali', 'type': 2, 'length': 0, 'precision': 0},
+                    {'expression': 'to_real("parz_sum")', 'name': 'totale area laterizi parziali', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_int("int_count")', 'name': 'num. laterizi interi', 'type': 2, 'length': 0, 'precision': 0},
+                    {'expression': 'to_real("int_sum")', 'name': 'totale area laterizi interi', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("int_mean")', 'name': 'media area laterizi interi', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("width_min")', 'name': 'width_min', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("width_max")', 'name': 'width_max', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("width_range")', 'name': 'width_range', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("width_mean")', 'name': 'width_mean', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("width_stddev")', 'name': 'width_stddev', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("height_min")', 'name': 'height_min', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("height_max")', 'name': 'height_max', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("height_range")', 'name': 'height_range', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("height_mean")', 'name': 'height_mean', 'type': 6, 'length': 0, 'precision': 4},
+                    {'expression': 'to_real("height_stddev")', 'name': 'height_stddev', 'type': 6, 'length': 0, 'precision': 4}
                 ],
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            refactor_area_int = processing.run('native:refactorfields', {
-                'INPUT': area_int_campioni['OUTPUT'],
-                'FIELDS_MAPPING': [
-                    {'expression': '"sito"', 'name': 'sito', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': '"ambiente"', 'name': 'ambiente', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': '"usm"', 'name': 'usm', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': '"campione"', 'name': 'campione', 'type': 10, 'length': 0, 'precision': 0},
-                    {'expression': 'to_real("area_campione")', 'name': 'area campione', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': '"count_int"', 'name': 'num. laterizi interi', 'type': 2, 'length': 0, 'precision': 0},
-                    {'expression': '"sum_int"', 'name': 'totale area laterizi interi', 'type': 6, 'length': 0, 'precision': 4},
-                    {'expression': '"mean_int"', 'name': 'media area laterizi interi', 'type': 6, 'length': 0, 'precision': 4}
-                ],
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            # Width e Height sono già stati ripuliti, non servono altri refactor
-            refactor_width = stat_width_clean
-            refactor_height = stat_height_clean
             
             feedback.setCurrentStep(14)
             
-            # ============ FASE 11: JOIN PROGRESSIVI ============
-            feedback.pushInfo("\n--- JOIN STATISTICHE ---")
-            
-            # Join area_parz + area_int
-            join1 = processing.run('native:joinattributestable', {
-                'INPUT': refactor_area_parz['OUTPUT'],
-                'INPUT_2': refactor_area_int['OUTPUT'],
-                'FIELD': 'campione',
-                'FIELD_2': 'campione',
-                'FIELDS_TO_COPY': ['num. laterizi interi', 'totale area laterizi interi', 'media area laterizi interi'],
-                'METHOD': 1,
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            # Join + width
-            join2 = processing.run('native:joinattributestable', {
-                'INPUT': join1['OUTPUT'],
-                'INPUT_2': refactor_width['OUTPUT'],
-                'FIELD': 'campione',
-                'FIELD_2': 'campione',
-                'FIELDS_TO_COPY': ['width_min', 'width_max', 'width_range', 'width_mean', 'width_stddev'],
-                'METHOD': 1,
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            # Join + height
-            join3 = processing.run('native:joinattributestable', {
-                'INPUT': join2['OUTPUT'],
-                'INPUT_2': refactor_height['OUTPUT'],
-                'FIELD': 'campione',
-                'FIELD_2': 'campione',
-                'FIELDS_TO_COPY': ['height_min', 'height_max', 'height_range', 'height_mean', 'height_stddev'],
-                'METHOD': 1,
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }, context=context, feedback=feedback, is_child_algorithm=True)
-            
-            feedback.setCurrentStep(15)
-            
-            # ============ FASE 12: CALCOLI FINALI ============
+            # ============ FASE 11: CALCOLI FINALI ============
             feedback.pushInfo("\n--- CALCOLI FINALI ---")
             
             # Calcolo num. laterizi interi calcolati (con gestione NULL robusta)
             calc1 = processing.run('native:fieldcalculator', {
-                'INPUT': join3['OUTPUT'],
+                'INPUT': all_stats_final['OUTPUT'],
                 'FIELD_NAME': 'num. laterizi interi calcolati',
                 'FIELD_TYPE': 0,
                 'FORMULA': '''CASE 
@@ -796,13 +722,13 @@ END''',
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
-            feedback.setCurrentStep(16)
+            feedback.setCurrentStep(15)
             
-            # ============ FASE 13: OUTPUT TABELLA COMPLETA ============
+            # ============ FASE 12: OUTPUT TABELLA COMPLETA ============
             feedback.pushInfo("\n--- CREAZIONE TABELLA ANALISI CAMPIONI ---")
             
             # Riorganizza campi finali per tabella
-            table_final = processing.run('native:refactorfields', {
+            table_refactored = processing.run('native:refactorfields', {
                 'INPUT': calc5['OUTPUT'],
                 'FIELDS_MAPPING': [
                     {'expression': '"sito"', 'name': 'sito', 'type': 10},
@@ -831,15 +757,21 @@ END''',
                     {'expression': '"height_mean"', 'name': 'height_mean', 'type': 6, 'precision': 4},
                     {'expression': '"height_stddev"', 'name': 'height_stddev', 'type': 6, 'precision': 4}
                 ],
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }, context=context, feedback=feedback, is_child_algorithm=True)
+            
+            # Rimuovi geometrie per creare una tabella pura
+            table_final = processing.run('native:dropgeometries', {
+                'INPUT': table_refactored['OUTPUT'],
                 'OUTPUT': parameters['output_campioni_table']
             }, context=context, feedback=feedback, is_child_algorithm=True)
             
             results['output_campioni_table'] = table_final['OUTPUT']
             context.layerToLoadOnCompletionDetails(results['output_campioni_table']).name = "analisi_campioni_table"
             self.verifica_features(results['output_campioni_table'], context, feedback, "Tabella analisi campioni")
-            feedback.setCurrentStep(17)
+            feedback.setCurrentStep(16)
             
-            # ============ FASE 14: OUTPUT CAMPIONI GEOGRAFICO ============
+            # ============ FASE 13: OUTPUT CAMPIONI GEOGRAFICO ============
             feedback.pushInfo("\n--- CREAZIONE LAYER CAMPIONI GEOGRAFICO ---")
             
             # Join tabella completa con layer campioni
@@ -897,37 +829,9 @@ END''',
             results['output_campioni'] = campioni_final['OUTPUT']
             context.layerToLoadOnCompletionDetails(results['output_campioni']).name = "analisi_campioni"
             self.verifica_features(results['output_campioni'], context, feedback, "Analisi campioni geografico")
-            feedback.setCurrentStep(18)
+            feedback.setCurrentStep(17)
             
-            # ============ FASE 15: RINOMINA LAYER ============
-            feedback.pushInfo("\n--- RINOMINA LAYER DI OUTPUT ---")
-            
-            # Dizionario con i nomi prestabiliti
-            nomi_layer = {
-                'output_bbox': 'min_oriented_bbox',
-                'output_rilievo': 'analisi_rilievo',
-                'output_campioni_table': 'analisi_campioni_table',
-                'output_campioni': 'analisi_campioni',
-                'output_width_range': 'conteggio_range_larghezza',
-                'output_height_range': 'conteggio_range_altezza'
-            }
-            
-            # Rinomina ogni layer
-            for key, nome in nomi_layer.items():
-                if key in results:
-                    try:
-                        renamed = processing.run('native:renamelayer', {
-                            'INPUT': results[key],
-                            'NAME': nome
-                        }, context=context, feedback=feedback, is_child_algorithm=True)
-                        results[key] = renamed['OUTPUT']
-                        feedback.pushInfo(f"  * {key} --> {nome}")
-                    except Exception as e:
-                        feedback.pushWarning(f"Impossibile rinominare {key}: {str(e)}")
-            
-            feedback.setCurrentStep(19)
-            
-            # ============ FASE 16: APPLICAZIONE STILI ============
+            # ============ FASE 14: APPLICAZIONE STILI ============
             feedback.pushInfo("\n--- APPLICAZIONE STILI ---")
             
             self.applica_stile(results['output_bbox'], stili['bbox'], context, feedback, 'bbox')
@@ -935,7 +839,7 @@ END''',
             self.applica_stile(results['output_campioni_table'], stili['campioni_table'], context, feedback, 'campioni_table')
             self.applica_stile(results['output_campioni'], stili['campioni'], context, feedback, 'campioni')
             
-            feedback.setCurrentStep(20)
+            feedback.setCurrentStep(18)
             
             # ============ RIEPILOGO ============
             feedback.pushInfo("\n" + "="*70)
@@ -1024,5 +928,5 @@ END''',
             <li>Il filtro materiali e' case-sensitive</li>
         </ul>
         
-        <h4>Versione: 0.3 (Fixed)</h4>
+        <h4>Versione: 0.3 (Ottimizzata)</h4>
         """
