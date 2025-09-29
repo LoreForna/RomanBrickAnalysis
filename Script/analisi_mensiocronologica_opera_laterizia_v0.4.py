@@ -864,5 +864,5 @@ END''',
             <li>Il filtro materiali e' case-sensitive</li>
         </ul>
         
-        <h4>Versione: 0.3 (Ottimizzata)</h4>
+        <h4>Versione: 0.4 (Ottimizzata)</h4>
         """
