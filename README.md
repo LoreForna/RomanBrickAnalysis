@@ -1,4 +1,4 @@
-# RomanBrickAnalysis
+# Mensio Analysis Tools
 
 Lo script, da integrare tra gli strumenti di processing di QGIS, è stato progettato specificamente per supportare l'analisi quantitativa delle murature di età romana in opera laterizia, offrendo un approccio strutturato e automatizzato per l’analisi dimensionale e statistica dei laterizi utilizzati nelle murature secondo il modello proposto da Maura Medri e dalla sua equipe (https://pdfs.semanticscholar.org/373e/c1a3bf317c3216612f4c63d9802da5d67ce0.pdf).
 
